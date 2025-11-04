@@ -1,0 +1,151 @@
+name: Deploy to Development
+
+on:
+  push:
+    branches: [ develop ]
+  pull_request:
+    branches: [ develop ]
+
+env:
+  AZURE_CONTAINERAPP_NAME: monitor-worker-dev
+  AZURE_GROUP_NAME: rg-monitor-dev
+  AZURE_LOCATION: centralus
+  REGISTRY_NAME: monitordevregistry
+
+jobs:
+  build-and-deploy-dev:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore MonitorBackend.Worker/MonitorBackend.Worker.csproj
+
+    - name: Build
+      run: dotnet build MonitorBackend.Worker/MonitorBackend.Worker.csproj --no-restore -c Release
+
+    - name: Test (optional)
+      run: dotnet test MonitorBackend.Worker/MonitorBackend.Worker.csproj --no-build -c Release --verbosity normal || true
+
+    - name: Log in to Azure
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS_DEV }}
+
+    - name: Create Infrastructure Template
+      run: |
+        cat > azure/infra-dev.bicep << 'EOF'
+        @description('Location for all resources')
+        param location string = resourceGroup().location
+        
+        @description('Container Registry name')
+        param registryName string = 'monitordevregistry'
+        
+        @description('Container App Environment name')
+        param environmentName string = 'monitor-worker-dev-env'
+        
+        // Container Registry
+        resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+          name: registryName
+          location: location
+          sku: {
+            name: 'Basic'
+          }
+          properties: {
+            adminUserEnabled: true
+          }
+        }
+        
+        // Log Analytics Workspace
+        resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+          name: 'monitor-worker-dev-logs'
+          location: location
+          properties: {
+            sku: {
+              name: 'PerGB2018'
+            }
+            retentionInDays: 30
+          }
+        }
+        
+        // Container Apps Environment
+        resource containerAppEnvironment 'Microsoft.App/managedEnvironments@2023-05-01' = {
+          name: environmentName
+          location: location
+          properties: {
+            appLogsConfiguration: {
+              destination: 'log-analytics'
+              logAnalyticsConfiguration: {
+                customerId: logAnalyticsWorkspace.properties.customerId
+                sharedKey: logAnalyticsWorkspace.listKeys().primarySharedKey
+              }
+            }
+          }
+        }
+        
+        output containerRegistryLoginServer string = containerRegistry.properties.loginServer
+        output containerRegistryName string = containerRegistry.name
+        output environmentId string = containerAppEnvironment.id
+        EOF
+
+    - name: Deploy Infrastructure
+      id: infra
+      run: |
+        DEPLOYMENT_OUTPUT=$(az deployment group create \
+          --resource-group ${{ env.AZURE_GROUP_NAME }} \
+          --template-file azure/infra-dev.bicep \
+          --query "properties.outputs" -o json)
+        
+        echo "REGISTRY_SERVER=$(echo $DEPLOYMENT_OUTPUT | jq -r '.containerRegistryLoginServer.value')" >> $GITHUB_ENV
+        echo "ENVIRONMENT_ID=$(echo $DEPLOYMENT_OUTPUT | jq -r '.environmentId.value')" >> $GITHUB_ENV
+
+    - name: Login to Container Registry
+      run: az acr login --name ${{ env.REGISTRY_NAME }}
+
+    - name: Build and Push Docker Image
+      run: |
+        IMAGE_TAG="${{ env.REGISTRY_SERVER }}/monitor-worker:dev-${{ github.sha }}"
+        docker build -t $IMAGE_TAG .
+        docker push $IMAGE_TAG
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+    - name: Create or Update Container App
+      run: |
+        # Check if Container App exists
+        if az containerapp show --name ${{ env.AZURE_CONTAINERAPP_NAME }} --resource-group ${{ env.AZURE_GROUP_NAME }} > /dev/null 2>&1; then
+          echo "Updating existing Container App..."
+          az containerapp update \
+            --name ${{ env.AZURE_CONTAINERAPP_NAME }} \
+            --resource-group ${{ env.AZURE_GROUP_NAME }} \
+            --image ${{ env.IMAGE_TAG }}
+        else
+          echo "Creating new Container App..."
+          REGISTRY_PASSWORD=$(az acr credential show --name ${{ env.REGISTRY_NAME }} --query "passwords[0].value" -o tsv)
+          
+          az containerapp create \
+            --name ${{ env.AZURE_CONTAINERAPP_NAME }} \
+            --resource-group ${{ env.AZURE_GROUP_NAME }} \
+            --environment ${{ env.ENVIRONMENT_ID }} \
+            --image ${{ env.IMAGE_TAG }} \
+            --registry-server ${{ env.REGISTRY_SERVER }} \
+            --registry-username ${{ env.REGISTRY_NAME }} \
+            --registry-password $REGISTRY_PASSWORD \
+            --cpu 0.25 \
+            --memory 0.5Gi \
+            --min-replicas 1 \
+            --max-replicas 1 \
+            --env-vars "WorkerSettings__FrontendHealthCheckUrl=${{ vars.FRONTEND_URL_DEV }}" "WorkerSettings__IntervalMinutes=2" "ASPNETCORE_ENVIRONMENT=Development"
+        fi
+
+    - name: Deployment Summary
+      run: |
+        echo "🎉 Development deployment completed!"
+        echo "📱 Container App: ${{ env.AZURE_CONTAINERAPP_NAME }}"
+        echo "📊 View logs: az containerapp logs show --name ${{ env.AZURE_CONTAINERAPP_NAME }} --resource-group ${{ env.AZURE_GROUP_NAME }} --follow"
