@@ -37,7 +37,7 @@ jobs:
     - name: Log in to Azure
       uses: azure/login@v1
       with:
-        creds: ${{ secrets.AZURE_CREDENTIALS_DEV }}
+        creds: ${{ secrets.AZURE_CREDS_DEV }}
 
     - name: Create Infrastructure Template
       run: |
@@ -141,7 +141,7 @@ jobs:
             --memory 0.5Gi \
             --min-replicas 1 \
             --max-replicas 1 \
-            --env-vars "WorkerSettings__FrontendHealthCheckUrl=${{ vars.FRONTEND_URL_DEV }}" "WorkerSettings__IntervalMinutes=2" "ASPNETCORE_ENVIRONMENT=Development"
+                        --env-vars "WorkerSettings__FrontendHealthCheckUrl=${{ vars.FRONTEND_DEV_URL }}" "WorkerSettings__IntervalMinutes=2" "ASPNETCORE_ENVIRONMENT=Development"
         fi
 
     - name: Deployment Summary
