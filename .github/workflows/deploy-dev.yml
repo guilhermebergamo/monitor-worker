@@ -141,7 +141,7 @@ jobs:
             --memory 0.5Gi \
             --min-replicas 1 \
             --max-replicas 1 \
-                        --env-vars "WorkerSettings__FrontendHealthCheckUrl=${{ vars.FRONTEND_DEV_URL }}" "WorkerSettings__IntervalMinutes=2" "ASPNETCORE_ENVIRONMENT=Development"
+                        --env-vars "WorkerSettings__ApiBaseUrl=${{ vars.API_BASE_URL_DEV }}" "WorkerSettings__IntervalMinutes=2" "ASPNETCORE_ENVIRONMENT=Development"
         fi
 
     - name: Deployment Summary

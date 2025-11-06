@@ -1,8 +1,11 @@
+using System.Text;
+using System.Text.Json;
+
 namespace MonitorBackend.Worker;
 
 /// <summary>
-/// Worker Service que executa periodicamente uma chamada HTTP ao frontend.
-/// Mantém o frontend "aquecido" e monitora sua disponibilidade.
+/// Worker Service que executa periodicamente chamadas HTTP para manter a API ativa.
+/// Realiza health checks e operações pesadas para manter o backend "aquecido".
 /// </summary>
 public sealed class FrontendHealthCheckWorker : BackgroundService
 {
@@ -10,7 +13,7 @@ public sealed class FrontendHealthCheckWorker : BackgroundService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
     private readonly int _intervalMinutes;
-    private readonly string _frontendUrl;
+    private readonly string _apiBaseUrl;
 
     public FrontendHealthCheckWorker(
         ILogger<FrontendHealthCheckWorker> logger,
@@ -21,72 +24,220 @@ public sealed class FrontendHealthCheckWorker : BackgroundService
         _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
 
-        _intervalMinutes = _configuration.GetValue<int>("WorkerSettings:IntervalMinutes", 3);
-        _frontendUrl = _configuration.GetValue<string>("WorkerSettings:FrontendHealthCheckUrl")
-            ?? "http://localhost:5173";
+        _intervalMinutes = _configuration.GetValue<int>("WorkerSettings:IntervalMinutes", 2);
+        _apiBaseUrl = _configuration.GetValue<string>("WorkerSettings:ApiBaseUrl")
+            ?? "https://monitor-api-dev.livelyisland-44050ad2.centralus.azurecontainerapps.io";
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "Frontend Health Check Worker iniciado. Intervalo: {Interval} minutos. URL: {Url}",
-            _intervalMinutes, _frontendUrl);
+            "Monitor Worker iniciado. Intervalo: {Interval} minutos. API: {Url}",
+            _intervalMinutes, _apiBaseUrl);
 
         // Aguarda 30 segundos antes da primeira execução
         await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await ExecuteHealthCheckAsync(stoppingToken);
+            await ExecuteAllChecksAsync(stoppingToken);
 
             var delay = TimeSpan.FromMinutes(_intervalMinutes);
             _logger.LogInformation("Próxima execução em {Minutes} minutos", _intervalMinutes);
             await Task.Delay(delay, stoppingToken);
         }
 
-        _logger.LogInformation("Frontend Health Check Worker finalizando...");
+        _logger.LogInformation("Monitor Worker finalizando...");
     }
 
-    private async Task ExecuteHealthCheckAsync(CancellationToken cancellationToken)
+    private async Task ExecuteAllChecksAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("========================================");
+        _logger.LogInformation("Iniciando ciclo de verificações...");
+        
+        var tasks = new List<Task>
+        {
+            RegistrarAcessoAsync(cancellationToken),
+            ProcessDataAsync(cancellationToken),
+            CpuIntensiveAsync(cancellationToken),
+            ParallelProcessingAsync(cancellationToken),
+            GenerateReportAsync(cancellationToken)
+        };
+
+        await Task.WhenAll(tasks);
+        
+        _logger.LogInformation("Ciclo de verificações concluído!");
+        _logger.LogInformation("========================================");
+    }
+
+    private async Task RegistrarAcessoAsync(CancellationToken cancellationToken)
     {
         try
         {
-            _logger.LogInformation("Executando health check no frontend: {Url}", _frontendUrl);
+            var url = $"{_apiBaseUrl}/api/registros/acesso";
+            _logger.LogInformation("📝 Registrando acesso...");
 
             var httpClient = _httpClientFactory.CreateClient();
             httpClient.Timeout = TimeSpan.FromSeconds(30);
 
+            var payload = new { observacao = "Acesso do worker - Keep Alive" };
+            var content = new StringContent(
+                JsonSerializer.Serialize(payload),
+                Encoding.UTF8,
+                "application/json");
+
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            var response = await httpClient.GetAsync(_frontendUrl, cancellationToken);
+            var response = await httpClient.PostAsync(url, content, cancellationToken);
             stopwatch.Stop();
 
             if (response.IsSuccessStatusCode)
             {
                 _logger.LogInformation(
-                    "✅ Frontend respondeu com sucesso! Status: {StatusCode}, Tempo: {ElapsedMs}ms",
+                    "✅ Acesso registrado! Status: {StatusCode}, Tempo: {ElapsedMs}ms",
                     (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
             }
             else
             {
                 _logger.LogWarning(
-                    "⚠️ Frontend respondeu com erro. Status: {StatusCode}, Tempo: {ElapsedMs}ms",
+                    "⚠️ Erro ao registrar acesso. Status: {StatusCode}, Tempo: {ElapsedMs}ms",
                     (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
-            }
-        }
-        catch (HttpRequestException ex)
-        {
-            _logger.LogError(ex, "❌ Erro de rede ao chamar o frontend");
-        }
-        catch (TaskCanceledException ex)
-        {
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogError(ex, "⏱️ Timeout ao chamar o frontend");
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ Erro não esperado ao executar health check");
+            _logger.LogError(ex, "❌ Erro ao registrar acesso");
+        }
+    }
+
+    private async Task ProcessDataAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = $"{_apiBaseUrl}/api/heavyops/process-data?sizeMB=50";
+            _logger.LogInformation("💾 Processando dados (50MB)...");
+
+            var httpClient = _httpClientFactory.CreateClient();
+            httpClient.Timeout = TimeSpan.FromMinutes(2);
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var response = await httpClient.GetAsync(url, cancellationToken);
+            stopwatch.Stop();
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogInformation(
+                    "✅ Dados processados! Status: {StatusCode}, Tempo: {ElapsedMs}ms",
+                    (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "⚠️ Erro ao processar dados. Status: {StatusCode}",
+                    (int)response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Erro ao processar dados");
+        }
+    }
+
+    private async Task CpuIntensiveAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = $"{_apiBaseUrl}/api/heavyops/cpu-intensive?iterations=1000000";
+            _logger.LogInformation("🔥 Executando operação CPU intensiva (1M iterações)...");
+
+            var httpClient = _httpClientFactory.CreateClient();
+            httpClient.Timeout = TimeSpan.FromMinutes(2);
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var response = await httpClient.GetAsync(url, cancellationToken);
+            stopwatch.Stop();
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogInformation(
+                    "✅ CPU intensivo concluído! Status: {StatusCode}, Tempo: {ElapsedMs}ms",
+                    (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "⚠️ Erro em CPU intensivo. Status: {StatusCode}",
+                    (int)response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Erro em operação CPU intensiva");
+        }
+    }
+
+    private async Task ParallelProcessingAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = $"{_apiBaseUrl}/api/heavyops/parallel-processing?itemCount=30";
+            _logger.LogInformation("⚡ Executando processamento paralelo (30 itens)...");
+
+            var httpClient = _httpClientFactory.CreateClient();
+            httpClient.Timeout = TimeSpan.FromMinutes(2);
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var response = await httpClient.GetAsync(url, cancellationToken);
+            stopwatch.Stop();
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogInformation(
+                    "✅ Processamento paralelo concluído! Status: {StatusCode}, Tempo: {ElapsedMs}ms",
+                    (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "⚠️ Erro em processamento paralelo. Status: {StatusCode}",
+                    (int)response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Erro em processamento paralelo");
+        }
+    }
+
+    private async Task GenerateReportAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = $"{_apiBaseUrl}/api/heavyops/generate-report?recordCount=50000";
+            _logger.LogInformation("📊 Gerando relatório (50k registros)...");
+
+            var httpClient = _httpClientFactory.CreateClient();
+            httpClient.Timeout = TimeSpan.FromMinutes(3);
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var response = await httpClient.GetAsync(url, cancellationToken);
+            stopwatch.Stop();
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogInformation(
+                    "✅ Relatório gerado! Status: {StatusCode}, Tempo: {ElapsedMs}ms",
+                    (int)response.StatusCode, stopwatch.ElapsedMilliseconds);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "⚠️ Erro ao gerar relatório. Status: {StatusCode}",
+                    (int)response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Erro ao gerar relatório");
         }
     }
 }

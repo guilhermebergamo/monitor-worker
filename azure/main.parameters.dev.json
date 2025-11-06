@@ -12,7 +12,7 @@
       "value": "monitordevregistry"
     },
     "frontendUrl": {
-      "value": "https://white-river-0f9f4b40f.3.azurestaticapps.net"
+      "value": "https://monitor-api-dev.livelyisland-44050ad2.centralus.azurecontainerapps.io"
     },
     "intervalMinutes": {
       "value": 3
